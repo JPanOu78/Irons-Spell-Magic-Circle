@@ -1,0 +1,6 @@
+{
+  "irons_magic_circle.configuration.enableMagicCircles": "Enable Magic Circles",
+  "irons_magic_circle.configuration.circleScale": "Magic Circle Scale",
+  "irons_magic_circle.configuration.rotationSpeed": "Magic Circle Rotation Speed",
+  "irons_magic_circle.configuration.circleOpacity": "Magic Circle Opacity"
+}

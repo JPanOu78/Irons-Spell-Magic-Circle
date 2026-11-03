@@ -1,0 +1,44 @@
+# Gradle
+.gradle/
+build/
+out/
+bin/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.code-workspace
+
+# Eclipse
+.project
+.classpath
+.settings/
+.eclipse/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Minecraft
+run/
+logs/
+*.log
+
+# Java & Decompiled References
+*.class
+*.jar
+*.war
+*.ear
+extracted_assets/
+.references/
+
+# AI Agents & Search Index
+.gemini/
+.agents/
+.cache/
+.mcp.json
+*.bak

@@ -1,0 +1,37 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="MIT"
+
+[[mixins]]
+config="irons_magic_circle.mixins.json"
+
+[[mods]]
+modId="irons_magic_circle"
+version="1.0.0"
+displayName="Iron's Spell Magic Circle"
+displayTest="IGNORE_ALL_VERSION"
+description='''
+A purely client-side visual addon for Iron's Spells 'n Spellbooks that renders customizable arcane magic circles during spellcasting.
+'''
+authors="mrzero784"
+
+[[dependencies.irons_magic_circle]]
+    modId="neoforge"
+    type="required"
+    versionRange="[21.1,)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.irons_magic_circle]]
+    modId="minecraft"
+    type="required"
+    versionRange="[1.21.1,1.22)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.irons_magic_circle]]
+    modId="irons_spellbooks"
+    type="required"
+    versionRange="[1.21.1-3.0,)"
+    ordering="AFTER"
+    side="CLIENT"
