@@ -29,3 +29,4 @@ public class IronsMagicCircleMod {
         LOGGER.info("Iron's Spell Magic Circle client renderer ready.");
     }
 }
+
