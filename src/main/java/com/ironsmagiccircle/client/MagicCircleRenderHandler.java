@@ -1,6 +1,7 @@
 package com.ironsmagiccircle.client;
 
 import com.ironsmagiccircle.IronsMagicCircleMod;
+import com.ironsmagiccircle.client.compat.gun.IGunCompatBridge;
 import com.ironsmagiccircle.config.MagicCircleClientConfig;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -23,6 +24,7 @@ import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
@@ -100,13 +102,51 @@ public class MagicCircleRenderHandler {
      */
     private static final Map<UUID, MagicCircleSession> ACTIVE_SESSIONS = new HashMap<>();
 
+    /**
+     * Optional bridge to firearm mod features (e.g. scoping / ADS detection).
+     */
+    private static IGunCompatBridge gunBridge = null;
+
+    /**
+     * Active gun muzzle magic circle bursts per player UUID.
+     */
+    private static final Map<UUID, GunCircleSession> ACTIVE_GUN_SESSIONS = new HashMap<>();
+
+    public static void registerGunBridge(IGunCompatBridge bridge) {
+        gunBridge = bridge;
+    }
+
+    public static boolean isSupportedSchool(String school) {
+        return SUPPORTED_SCHOOLS.contains(school);
+    }
+
+    public static void triggerGunMagicCircle(
+            UUID playerId,
+            String spellId,
+            String schoolName,
+            int layerCount,
+            float extraForwardOffset
+    ) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null) return;
+
+        float currentTime = (float) mc.level.getGameTime();
+        ACTIVE_GUN_SESSIONS.put(
+                playerId,
+                new GunCircleSession(playerId, spellId, schoolName, layerCount, currentTime, extraForwardOffset)
+        );
+    }
+
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
             return;
         }
-        if (!MagicCircleClientConfig.ENABLE_MAGIC_CIRCLES.get()) {
+        boolean enableBodyCircles = MagicCircleClientConfig.ENABLE_MAGIC_CIRCLES.get();
+        boolean enableGunCircles = MagicCircleClientConfig.ENABLE_GUN_MAGIC_CIRCLES.get();
+        if (!enableBodyCircles && !enableGunCircles) {
             ACTIVE_SESSIONS.clear();
+            ACTIVE_GUN_SESSIONS.clear();
             return;
         }
 
@@ -114,7 +154,15 @@ public class MagicCircleRenderHandler {
         ClientLevel level = mc.level;
         if (level == null || mc.player == null) {
             ACTIVE_SESSIONS.clear();
+            ACTIVE_GUN_SESSIONS.clear();
             return;
+        }
+
+        if (!enableBodyCircles) {
+            ACTIVE_SESSIONS.clear();
+        }
+        if (!enableGunCircles) {
+            ACTIVE_GUN_SESSIONS.clear();
         }
 
         float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(true);
@@ -131,88 +179,120 @@ public class MagicCircleRenderHandler {
         float fadeInTicks = MagicCircleClientConfig.LAYER_FADE_IN_TICKS.get().floatValue();
 
         // 1. Update sessions from currently casting players in the level
-        for (AbstractClientPlayer player : level.players()) {
-            if (player.isSpectator() || !player.isAlive()) {
-                ACTIVE_SESSIONS.remove(player.getUUID());
-                continue;
-            }
+        if (enableBodyCircles) {
+            for (AbstractClientPlayer player : level.players()) {
+                if (player.isSpectator() || !player.isAlive()) {
+                    ACTIVE_SESSIONS.remove(player.getUUID());
+                    continue;
+                }
 
-            UUID uuid = player.getUUID();
-            CastingState liveState = resolvePlayerCastingState(player, player == mc.player);
+                UUID uuid = player.getUUID();
+                CastingState liveState = resolvePlayerCastingState(player, player == mc.player);
 
-            if (liveState != null) {
-                MagicCircleSession session = ACTIVE_SESSIONS.get(uuid);
-                boolean isNewCast = (session == null)
-                        || !session.isCurrentlyCasting
-                        || !session.spellId.equals(liveState.spellId);
+                if (liveState != null) {
+                    MagicCircleSession session = ACTIVE_SESSIONS.get(uuid);
+                    boolean isNewCast = (session == null)
+                            || !session.isCurrentlyCasting
+                            || !session.spellId.equals(liveState.spellId);
 
-                if (isNewCast) {
-                    session = new MagicCircleSession(
-                            liveState.spellId,
-                            liveState.schoolName,
-                            liveState.layerCount,
-                            currentTime
-                    );
-                    ACTIVE_SESSIONS.put(uuid, session);
+                    if (isNewCast) {
+                        session = new MagicCircleSession(
+                                liveState.spellId,
+                                liveState.schoolName,
+                                liveState.layerCount,
+                                currentTime
+                        );
+                        ACTIVE_SESSIONS.put(uuid, session);
+                    } else {
+                        session.schoolName = liveState.schoolName;
+                        session.layerCount = liveState.layerCount;
+                    }
+                    session.isCurrentlyCasting = true;
+                    session.lastActiveTime = currentTime;
                 } else {
-                    session.schoolName = liveState.schoolName;
-                    session.layerCount = liveState.layerCount;
-                }
-                session.isCurrentlyCasting = true;
-                session.lastActiveTime = currentTime;
-            } else {
-                MagicCircleSession session = ACTIVE_SESSIONS.get(uuid);
-                if (session != null && session.isCurrentlyCasting) {
-                    session.isCurrentlyCasting = false;
-                    // Ensure all layers have enough time to finish their staggered slide-in
-                    // before the fade-out completes, especially for Instant / short casts!
-                    float minFullDisplayTime = session.castStartTime
-                            + ((session.layerCount - 1) * staggerTicks)
-                            + fadeInTicks
-                            + 4.0f;
-                    session.castEndTime = Math.max(currentTime, minFullDisplayTime);
+                    MagicCircleSession session = ACTIVE_SESSIONS.get(uuid);
+                    if (session != null && session.isCurrentlyCasting) {
+                        session.isCurrentlyCasting = false;
+                        float minFullDisplayTime = session.castStartTime
+                                + ((session.layerCount - 1) * staggerTicks)
+                                + fadeInTicks
+                                + 4.0f;
+                        session.castEndTime = Math.max(currentTime, minFullDisplayTime);
+                    }
                 }
             }
-        }
 
-        // 2. Render all active and fading-out sessions
-        Iterator<Map.Entry<UUID, MagicCircleSession>> it = ACTIVE_SESSIONS.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<UUID, MagicCircleSession> entry = it.next();
-            UUID uuid = entry.getKey();
-            MagicCircleSession session = entry.getValue();
+            // 2. Render all active and fading-out body sessions
+            Iterator<Map.Entry<UUID, MagicCircleSession>> it = ACTIVE_SESSIONS.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<UUID, MagicCircleSession> entry = it.next();
+                UUID uuid = entry.getKey();
+                MagicCircleSession session = entry.getValue();
 
-            Player player = level.getPlayerByUUID(uuid);
-            if (player == null || !player.isAlive() || player.isSpectator()) {
-                it.remove();
-                continue;
-            }
-
-            // Compute post-cast fade-out factor (1.0 while casting, smoothly eases to 0.0 over fadeOutTicks)
-            float fadeOutFactor = 1.0f;
-            if (!session.isCurrentlyCasting) {
-                float elapsedAfterEnd = currentTime - session.castEndTime;
-                if (elapsedAfterEnd >= fadeOutTicks) {
+                Player player = level.getPlayerByUUID(uuid);
+                if (player == null || !player.isAlive() || player.isSpectator()) {
                     it.remove();
                     continue;
                 }
-                if (elapsedAfterEnd > 0.0f) {
-                    float t = Mth.clamp(elapsedAfterEnd / (float) fadeOutTicks, 0.0f, 1.0f);
-                    // Smooth cosine/cubic ease-out so it lingers gently then dissolves
-                    fadeOutFactor = (1.0f - t) * (1.0f - t * 0.5f);
-                }
-            }
 
-            renderPlayerMagicCircle(
-                    player,
-                    session,
-                    currentTime,
-                    fadeOutFactor,
-                    partialTick,
-                    camPos,
-                    poseStack,
-                    bufferSource
-            );
+                float fadeOutFactor = 1.0f;
+                if (!session.isCurrentlyCasting) {
+                    float elapsedAfterEnd = currentTime - session.castEndTime;
+                    if (elapsedAfterEnd >= fadeOutTicks) {
+                        it.remove();
+                        continue;
+                    }
+                    if (elapsedAfterEnd > 0.0f) {
+                        float t = Mth.clamp(elapsedAfterEnd / (float) fadeOutTicks, 0.0f, 1.0f);
+                        fadeOutFactor = (1.0f - t) * (1.0f - t * 0.5f);
+                    }
+                }
+
+                renderPlayerMagicCircle(
+                        player,
+                        session,
+                        currentTime,
+                        fadeOutFactor,
+                        partialTick,
+                        camPos,
+                        poseStack,
+                        bufferSource
+                );
+            }
+        }
+
+        // 3. Render active gun muzzle magic circles (Iron's Arms Spell Bullet compatibility)
+        if (enableGunCircles && !ACTIVE_GUN_SESSIONS.isEmpty()) {
+            int gunDurationTicks = MagicCircleClientConfig.GUN_CIRCLE_DURATION_TICKS.get();
+            Iterator<Map.Entry<UUID, GunCircleSession>> gunIt = ACTIVE_GUN_SESSIONS.entrySet().iterator();
+            while (gunIt.hasNext()) {
+                Map.Entry<UUID, GunCircleSession> entry = gunIt.next();
+                UUID uuid = entry.getKey();
+                GunCircleSession session = entry.getValue();
+
+                Player player = level.getPlayerByUUID(uuid);
+                if (player == null || !player.isAlive() || player.isSpectator()) {
+                    gunIt.remove();
+                    continue;
+                }
+
+                float age = currentTime - session.shootTime;
+                if (age >= gunDurationTicks || age < 0.0f) {
+                    gunIt.remove();
+                    continue;
+                }
+
+                renderGunMagicCircle(
+                        player,
+                        session,
+                        age,
+                        gunDurationTicks,
+                        partialTick,
+                        camPos,
+                        poseStack,
+                        bufferSource
+                );
+            }
         }
 
         bufferSource.endBatch();
@@ -514,6 +594,165 @@ public class MagicCircleRenderHandler {
             this.lastActiveTime = castStartTime;
             this.castEndTime = castStartTime;
             this.isCurrentlyCasting = true;
+        }
+    }
+
+    /**
+     * Renders an arcane magic circle at the firearm's muzzle when firing a spell bullet.
+     * Features:
+     * 1. Instant full emergence (no layer stagger delay, all active layers render together at tick 0).
+     * 2. Flash appearance on shot and smooth ease-out fade away over gunCircleDurationTicks.
+     * 3. Scaled down to match firearm muzzle size (~0.20m - 0.35m radius).
+     * 4. Fully configurable scale, duration, forward offset, and rotation speed.
+     */
+    private static void renderGunMagicCircle(
+            Player player,
+            GunCircleSession session,
+            float age,
+            int durationTicks,
+            float partialTick,
+            Vec3 camPos,
+            PoseStack poseStack,
+            MultiBufferSource bufferSource
+    ) {
+        float playerScale = Math.max(0.05f, player.getScale());
+        float configScale = MagicCircleClientConfig.GUN_CIRCLE_SCALE.get().floatValue();
+        float configForwardOffset = MagicCircleClientConfig.GUN_CIRCLE_FORWARD_OFFSET.get().floatValue();
+        float baseRotationSpeed = MagicCircleClientConfig.GUN_CIRCLE_ROTATION_SPEED.get().floatValue();
+        float maxOpacity = MagicCircleClientConfig.GUN_CIRCLE_OPACITY.get().floatValue();
+        boolean enableBloomGlow = MagicCircleClientConfig.ENABLE_SHADER_BLOOM_GLOW.get();
+        float glowIntensity = MagicCircleClientConfig.GLOW_INTENSITY.get().floatValue();
+
+        // 1. Instant full emergence, smooth quadratic/cubic ease-out fade
+        float progress = Mth.clamp(age / (float) durationTicks, 0.0f, 1.0f);
+        float inv = 1.0f - progress;
+        float fadeFactor = inv * (1.0f + 0.15f * progress);
+        if (fadeFactor <= 0.01f) {
+            return;
+        }
+
+        // Slight energetic blast expansion (+12% expansion as the bullet shoots through)
+        float blastWaveScale = 1.0f + 0.12f * (1.0f - inv * inv);
+
+        // Base gun radius: compact muzzle ring (~0.23m base * playerScale * configScale)
+        float raritySizeBonus = 1.0f + (session.layerCount - 1) * 0.04f;
+        float baseRadius = 0.65f * playerScale * configScale * raritySizeBonus * blastWaveScale;
+
+        // 2. Position calculation
+        double interpX = Mth.lerp(partialTick, player.xo, player.getX());
+        double interpY = Mth.lerp(partialTick, player.yo, player.getY());
+        double interpZ = Mth.lerp(partialTick, player.zo, player.getZ());
+        double originY = interpY + player.getEyeHeight();
+
+        Vec3 lookVec = player.getViewVector(partialTick);
+        Vec3 rightVec = lookVec.cross(new Vec3(0, 1, 0));
+        if (rightVec.lengthSqr() < 1e-4) {
+            rightVec = new Vec3(1, 0, 0);
+        } else {
+            rightVec = rightVec.normalize();
+        }
+
+        boolean isLeftArm = player.getMainArm() == HumanoidArm.LEFT;
+        boolean isFirstPerson = (player == Minecraft.getInstance().player)
+                && Minecraft.getInstance().options.getCameraType().isFirstPerson();
+        boolean isScoping = (gunBridge != null) && gunBridge.isScoping(player);
+
+        double rightOffset;
+        double downOffset;
+        double forwardDist;
+
+        if (isScoping) {
+            rightOffset = 0.0;
+            downOffset = -0.06 * playerScale;
+            forwardDist = (0.65 + session.extraForwardOffset + configForwardOffset) * playerScale;
+        } else if (isFirstPerson) {
+            rightOffset = (isLeftArm ? -0.20 : 0.20) * playerScale;
+            downOffset = -0.14 * playerScale;
+            forwardDist = (0.75 + session.extraForwardOffset + configForwardOffset) * playerScale;
+        } else {
+            rightOffset = (isLeftArm ? -0.30 : 0.30) * playerScale;
+            downOffset = -0.20 * playerScale;
+            forwardDist = (0.80 + session.extraForwardOffset + configForwardOffset) * playerScale;
+        }
+
+        double circleCenterX = interpX + lookVec.x * forwardDist + rightVec.x * rightOffset;
+        double circleCenterY = originY + lookVec.y * forwardDist + downOffset;
+        double circleCenterZ = interpZ + lookVec.z * forwardDist + rightVec.z * rightOffset;
+
+        float yaw = player.getViewYRot(partialTick);
+        float pitch = player.getViewXRot(partialTick);
+
+        ResourceLocation[] schoolLayers = getSchoolLayerTextures(session.schoolName);
+
+        // 3. Render ALL layers simultaneously - NO STAGGER ("ไม่ต้องเรียงลำดับการแสดงผล")
+        for (int i = 0; i < session.layerCount; i++) {
+            float layerOpacity = maxOpacity * fadeFactor;
+            int baseAlpha = Mth.clamp((int) (layerOpacity * 255.0f), 0, 255);
+            if (baseAlpha <= 2) {
+                continue;
+            }
+
+            ResourceLocation layerTexture = schoolLayers[i];
+            float layerRadius = baseRadius * LAYER_SCALE_FACTORS[i];
+
+            // Tiny depth offset to avoid Z-fighting
+            float convergedDepthOffset = (i - (session.layerCount - 1) * 0.5f) * 0.004f * playerScale;
+            double layerWorldX = circleCenterX + lookVec.x * convergedDepthOffset;
+            double layerWorldY = circleCenterY + lookVec.y * convergedDepthOffset;
+            double layerWorldZ = circleCenterZ + lookVec.z * convergedDepthOffset;
+
+            // High speed spinning rotation
+            float rotationAngleDeg = 0.0f;
+            if (baseRotationSpeed > 0.0f) {
+                rotationAngleDeg = (age * baseRotationSpeed * LAYER_ROTATION_MULTIPLIERS[i] * 1.5f) % 360.0f;
+            }
+
+            poseStack.pushPose();
+            poseStack.translate(layerWorldX - camPos.x, layerWorldY - camPos.y, layerWorldZ - camPos.z);
+            poseStack.mulPose(Axis.YP.rotationDegrees(-yaw));
+            poseStack.mulPose(Axis.XP.rotationDegrees(pitch));
+            if (rotationAngleDeg != 0.0f) {
+                poseStack.mulPose(Axis.ZP.rotationDegrees(rotationAngleDeg));
+            }
+
+            Matrix4f poseMatrix = poseStack.last().pose();
+
+            // PASS 1: Base Translucent Emissive Pass
+            VertexConsumer baseConsumer = bufferSource.getBuffer(RenderType.entityTranslucentEmissive(layerTexture));
+            drawDoubleSidedQuad(baseConsumer, poseMatrix, layerRadius, 255, 255, 255, baseAlpha);
+
+            // PASS 2: Shader HDR Additive Bloom Pass
+            if (enableBloomGlow) {
+                float effectiveGlow = glowIntensity * 1.25f * fadeFactor;
+                int glowChannel = Mth.clamp((int) (255.0f * Mth.clamp(effectiveGlow, 0.0f, 1.0f)), 0, 255);
+                if (glowChannel > 2) {
+                    VertexConsumer glowConsumer = bufferSource.getBuffer(RenderHelper.CustomerRenderType.magicNoCull(layerTexture));
+                    drawDoubleSidedQuad(glowConsumer, poseMatrix, layerRadius, glowChannel, glowChannel, glowChannel, glowChannel);
+                }
+            }
+
+            poseStack.popPose();
+        }
+    }
+
+    /**
+     * Tracks an active gun muzzle magic circle burst for a specific player.
+     */
+    public static class GunCircleSession {
+        public final UUID playerId;
+        public final String spellId;
+        public final String schoolName;
+        public final int layerCount;
+        public final float shootTime;
+        public final float extraForwardOffset;
+
+        public GunCircleSession(UUID playerId, String spellId, String schoolName, int layerCount, float shootTime, float extraForwardOffset) {
+            this.playerId = playerId;
+            this.spellId = spellId;
+            this.schoolName = schoolName;
+            this.layerCount = layerCount;
+            this.shootTime = shootTime;
+            this.extraForwardOffset = extraForwardOffset;
         }
     }
 }

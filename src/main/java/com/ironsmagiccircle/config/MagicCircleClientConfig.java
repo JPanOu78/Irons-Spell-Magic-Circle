@@ -52,5 +52,33 @@ public class MagicCircleClientConfig {
             .comment("Extra distance in blocks further away from the caster that each layer starts at before sliding into place.")
             .defineInRange("layerSlideDistance", 0.65, 0.0, 3.0);
 
+    // ==========================================
+    // Gun Muzzle Magic Circle Compatibility (Iron's Arms Spell Bullet)
+    // ==========================================
+
+    public static final ModConfigSpec.BooleanValue ENABLE_GUN_MAGIC_CIRCLES = BUILDER
+            .comment("Enable rendering of arcane magic circles at the firearm muzzle when firing spell bullets.")
+            .define("enableGunMagicCircles", true);
+
+    public static final ModConfigSpec.DoubleValue GUN_CIRCLE_SCALE = BUILDER
+            .comment("Base scale multiplier for gun muzzle magic circles relative to weapon size (0.1 to 3.0).")
+            .defineInRange("gunCircleScale", 0.35, 0.1, 3.0);
+
+    public static final ModConfigSpec.IntValue GUN_CIRCLE_DURATION_TICKS = BUILDER
+            .comment("Duration in ticks (20 ticks = 1 second) for the muzzle magic circle to flash and fade out after firing.")
+            .defineInRange("gunCircleDurationTicks", 12, 3, 60);
+
+    public static final ModConfigSpec.DoubleValue GUN_CIRCLE_FORWARD_OFFSET = BUILDER
+            .comment("Additional forward or backward positional offset in blocks along the firearm barrel.")
+            .defineInRange("gunCircleForwardOffset", 0.0, -1.0, 2.0);
+
+    public static final ModConfigSpec.DoubleValue GUN_CIRCLE_ROTATION_SPEED = BUILDER
+            .comment("Rotation speed multiplier for the high-energy gun muzzle spin (degrees per tick).")
+            .defineInRange("gunCircleRotationSpeed", 4.5, 0.0, 30.0);
+
+    public static final ModConfigSpec.DoubleValue GUN_CIRCLE_OPACITY = BUILDER
+            .comment("Maximum opacity (alpha) of rendered gun muzzle circles (0.05 to 1.0).")
+            .defineInRange("gunCircleOpacity", 0.65, 0.05, 1.0);
+
     public static final ModConfigSpec SPEC = BUILDER.build();
 }

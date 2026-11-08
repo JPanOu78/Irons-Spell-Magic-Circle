@@ -3,9 +3,11 @@
   "minVersion": "0.8.5",
   "package": "com.ironsmagiccircle.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": [],
+  "plugin": "com.ironsmagiccircle.mixin.MagicCircleMixinPlugin",
+  "client": [
+    "ClientboundMuzzleFlashPacketMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }
 }
-

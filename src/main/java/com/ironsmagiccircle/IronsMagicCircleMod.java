@@ -27,6 +27,14 @@ public class IronsMagicCircleMod {
 
     private void onClientSetup(final FMLClientSetupEvent event) {
         LOGGER.info("Iron's Spell Magic Circle client renderer ready.");
+        if (net.neoforged.fml.ModList.get().isLoaded("irons_artifice") && net.neoforged.fml.ModList.get().isLoaded("irons_spell_bullet")) {
+            try {
+                com.ironsmagiccircle.client.compat.gun.GunMagicCircleCompat.init();
+                LOGGER.info("Iron's Spell Magic Circle: Gun compatibility initialized successfully.");
+            } catch (Throwable t) {
+                LOGGER.error("Failed to initialize gun compatibility", t);
+            }
+        }
     }
 }
 
