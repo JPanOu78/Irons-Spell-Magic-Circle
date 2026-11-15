@@ -6,6 +6,7 @@ import com.ironsmagiccircle.config.MagicCircleClientConfig;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
+import io.redspace.ironsspellbooks.api.registry.SchoolRegistry;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
 import io.redspace.ironsspellbooks.api.spells.CastType;
@@ -123,7 +124,8 @@ public class MagicCircleRenderHandler {
     public static void triggerGunMagicCircle(
             UUID playerId,
             String spellId,
-            String schoolName,
+            ResourceLocation schoolId,
+            SchoolType schoolType,
             int layerCount,
             float extraForwardOffset
     ) {
@@ -133,8 +135,19 @@ public class MagicCircleRenderHandler {
         float currentTime = (float) mc.level.getGameTime();
         ACTIVE_GUN_SESSIONS.put(
                 playerId,
-                new GunCircleSession(playerId, spellId, schoolName, layerCount, currentTime, extraForwardOffset)
+                new GunCircleSession(playerId, spellId, schoolId, schoolType, layerCount, currentTime, extraForwardOffset)
         );
+    }
+
+    public static void triggerGunMagicCircle(
+            UUID playerId,
+            String spellId,
+            String schoolName,
+            int layerCount,
+            float extraForwardOffset
+    ) {
+        ResourceLocation id = ResourceLocation.fromNamespaceAndPath("irons_spellbooks", schoolName);
+        triggerGunMagicCircle(playerId, spellId, id, SchoolRegistry.getSchool(id), layerCount, extraForwardOffset);
     }
 
     @SubscribeEvent
@@ -198,13 +211,15 @@ public class MagicCircleRenderHandler {
                     if (isNewCast) {
                         session = new MagicCircleSession(
                                 liveState.spellId,
-                                liveState.schoolName,
+                                liveState.schoolId,
+                                liveState.schoolType,
                                 liveState.layerCount,
                                 currentTime
                         );
                         ACTIVE_SESSIONS.put(uuid, session);
                     } else {
-                        session.schoolName = liveState.schoolName;
+                        session.schoolId = liveState.schoolId;
+                        session.schoolType = liveState.schoolType;
                         session.layerCount = liveState.layerCount;
                     }
                     session.isCurrentlyCasting = true;
@@ -331,15 +346,11 @@ public class MagicCircleRenderHandler {
             return null;
         }
 
-        // Determine school name for texture folder lookup
-        String schoolName = DEFAULT_SCHOOL;
+        // Dynamically resolve SchoolType and ResourceLocation ID (supports any Addon school!)
         SchoolType schoolType = spell.getSchoolType();
-        if (schoolType != null && schoolType.getId() != null) {
-            String path = schoolType.getId().getPath();
-            if (SUPPORTED_SCHOOLS.contains(path)) {
-                schoolName = path;
-            }
-        }
+        ResourceLocation schoolId = (schoolType != null && schoolType.getId() != null)
+                ? schoolType.getId()
+                : SchoolRegistry.EVOCATION_RESOURCE;
 
         // Determine number of stacked layers (1..5) from SpellRarity (COMMON=0 .. LEGENDARY=4)
         int safeLevel = Math.max(1, spellLevel);
@@ -347,7 +358,7 @@ public class MagicCircleRenderHandler {
         int rarityIndex = (rarity != null) ? rarity.getValue() : 0;
         int layerCount = Mth.clamp(rarityIndex + 1, 1, MAX_LAYERS);
 
-        return new CastingState(spellId, schoolName, layerCount);
+        return new CastingState(spellId, schoolId, schoolType, layerCount);
     }
 
     /**
@@ -403,9 +414,17 @@ public class MagicCircleRenderHandler {
 
         // Elapsed ticks since this cast session started
         float sessionAge = Math.max(0.0f, currentTime - session.castStartTime);
-        float pulse = 0.92f + 0.08f * Mth.sin(currentTime * 0.22f);
 
-        ResourceLocation[] schoolLayers = getSchoolLayerTextures(session.schoolName);
+        // Dynamic Phase Multipliers from Config:
+        float emergenceStartScale = MagicCircleClientConfig.EMERGENCE_START_SCALE.get().floatValue();
+        float emergenceSpeedMult = MagicCircleClientConfig.EMERGENCE_SPEED_MULTIPLIER.get().floatValue();
+        float activeScale = MagicCircleClientConfig.ACTIVE_SCALE.get().floatValue();
+        float activeSpeedMult = MagicCircleClientConfig.ACTIVE_SPEED_MULTIPLIER.get().floatValue();
+        float fadeOutEndScale = MagicCircleClientConfig.FADE_OUT_END_SCALE.get().floatValue();
+        float fadeOutSpeedMult = MagicCircleClientConfig.FADE_OUT_SPEED_MULTIPLIER.get().floatValue();
+        float pulseIntensity = MagicCircleClientConfig.PULSE_INTENSITY.get().floatValue();
+
+        float pulse = 1.0f + pulseIntensity * Mth.sin(currentTime * 0.22f);
 
         // 5. Render each stacked layer (layer_1 .. layer_N) with staggered fade-in & inward slide
         for (int i = 0; i < session.layerCount; i++) {
@@ -421,6 +440,27 @@ public class MagicCircleRenderHandler {
             float inv = 1.0f - spawnProgress;
             float easedProgress = 1.0f - (inv * inv * inv);
 
+            // Phase dynamics:
+            float phaseScale;
+            float phaseSpeedMult;
+
+            if (session.isCurrentlyCasting) {
+                if (spawnProgress < 1.0f) {
+                    // Phase 1: Emergence
+                    phaseScale = Mth.lerp(easedProgress, emergenceStartScale, activeScale);
+                    phaseSpeedMult = Mth.lerp(easedProgress, emergenceSpeedMult, activeSpeedMult);
+                } else {
+                    // Phase 2: Active Sustained Casting
+                    phaseScale = activeScale * pulse;
+                    phaseSpeedMult = activeSpeedMult;
+                }
+            } else {
+                // Phase 3: Fade-Out / Dissolution
+                float tFade = 1.0f - fadeOutFactor;
+                phaseScale = Mth.lerp(tFade, activeScale, fadeOutEndScale);
+                phaseSpeedMult = Mth.lerp(tFade, activeSpeedMult, fadeOutSpeedMult);
+            }
+
             // Combined opacity for this layer (staggered fade-in * post-cast fade-out * config opacity)
             float layerOpacity = maxOpacity * easedProgress * fadeOutFactor;
             int baseAlpha = Mth.clamp((int) (layerOpacity * 255.0f), 0, 255);
@@ -428,10 +468,9 @@ public class MagicCircleRenderHandler {
                 continue;
             }
 
-            ResourceLocation layerTexture = schoolLayers[i];
-            // Slight scale-in from 1.12x down to 1.0x as the layer slides inward and locks into place
-            float slideScale = 1.0f + (1.0f - easedProgress) * 0.12f;
-            float layerRadius = baseRadius * LAYER_SCALE_FACTORS[i] * slideScale;
+            ResourceLocation layerTexture = getLayerTexture(session.schoolId, session.schoolType, i);
+            float configuredLayerScale = MagicCircleClientConfig.getLayerScale(i);
+            float layerRadius = baseRadius * configuredLayerScale * phaseScale;
 
             // Slide-in along lookVec:
             // Starts further away from the caster (+layerExtraStartDist along lookVec)
@@ -442,7 +481,7 @@ public class MagicCircleRenderHandler {
             // Tiny converged depth offset so stacked layers never Z-fight once locked together
             float convergedDepthOffset = (i - (session.layerCount - 1) * 0.5f) * 0.005f * playerScale;
             // Subtle outward drift during the final fade-out
-            float fadeOutDriftDist = (1.0f - fadeOutFactor) * 0.15f * playerScale;
+            float fadeOutDriftDist = (1.0f - fadeOutFactor) * MagicCircleClientConfig.FADE_OUT_DRIFT_DISTANCE.get().floatValue() * playerScale;
 
             double totalForwardShift = convergedDepthOffset + currentSlideDist + fadeOutDriftDist;
             double layerWorldX = circleCenterX + lookVec.x * totalForwardShift;
@@ -452,7 +491,9 @@ public class MagicCircleRenderHandler {
             // Continuous rotation angle for this layer
             float rotationAngleDeg = 0.0f;
             if (baseRotationSpeed > 0.0f) {
-                rotationAngleDeg = (layerAge * baseRotationSpeed * LAYER_ROTATION_MULTIPLIERS[i]) % 360.0f;
+                float configuredLayerSpeed = MagicCircleClientConfig.getLayerSpeed(i);
+                float effectiveSpeed = baseRotationSpeed * configuredLayerSpeed * phaseSpeedMult;
+                rotationAngleDeg = (layerAge * effectiveSpeed) % 360.0f;
             }
 
             poseStack.pushPose();
@@ -469,17 +510,22 @@ public class MagicCircleRenderHandler {
 
             Matrix4f poseMatrix = poseStack.last().pose();
 
-            // PASS 1: Base Translucent Emissive Pass (See-through, crisp color)
+            SchoolVisualHelper.SchoolVisual visual = SchoolVisualHelper.getSchoolVisual(session.schoolId, session.schoolType);
+
+            // PASS 1: Base Translucent Emissive Pass (See-through, crisp color or dynamic addon tint)
             VertexConsumer baseConsumer = bufferSource.getBuffer(RenderType.entityTranslucentEmissive(layerTexture));
-            drawDoubleSidedQuad(baseConsumer, poseMatrix, layerRadius, 255, 255, 255, baseAlpha);
+            drawDoubleSidedQuad(baseConsumer, poseMatrix, layerRadius, visual.red, visual.green, visual.blue, baseAlpha);
 
             // PASS 2: Shader HDR Additive Bloom Pass (scaled by easedProgress and fadeOutFactor)
             if (enableBloomGlow) {
                 float effectiveGlow = glowIntensity * pulse * easedProgress * fadeOutFactor;
-                int glowChannel = Mth.clamp((int) (255.0f * Mth.clamp(effectiveGlow, 0.0f, 1.0f)), 0, 255);
-                if (glowChannel > 2) {
+                int glowAlpha = Mth.clamp((int) (255.0f * Mth.clamp(effectiveGlow, 0.0f, 1.0f)), 0, 255);
+                if (glowAlpha > 2) {
+                    int glowR = Mth.clamp((int) (visual.red * effectiveGlow), 0, 255);
+                    int glowG = Mth.clamp((int) (visual.green * effectiveGlow), 0, 255);
+                    int glowB = Mth.clamp((int) (visual.blue * effectiveGlow), 0, 255);
                     VertexConsumer glowConsumer = bufferSource.getBuffer(RenderHelper.CustomerRenderType.magicNoCull(layerTexture));
-                    drawDoubleSidedQuad(glowConsumer, poseMatrix, layerRadius, glowChannel, glowChannel, glowChannel, glowChannel);
+                    drawDoubleSidedQuad(glowConsumer, poseMatrix, layerRadius, glowR, glowG, glowB, glowAlpha);
                 }
             }
 
@@ -556,22 +602,34 @@ public class MagicCircleRenderHandler {
     }
 
     /**
-     * Returns the cached array of 5 layer ResourceLocations for the given school.
+     * Resolves the texture to render for a specific school and layer index (0..4).
+     * If the player configured a custom texture path in client config, this tries to parse it,
+     * replacing "{school}" with the active school name.
+     * Falls back to SchoolVisualHelper which supports both built-in and addon schools.
      */
-    private static ResourceLocation[] getSchoolLayerTextures(String school) {
-        return TEXTURE_CACHE.computeIfAbsent(school, key -> {
-            ResourceLocation[] layers = new ResourceLocation[MAX_LAYERS];
-            for (int i = 0; i < MAX_LAYERS; i++) {
-                layers[i] = ResourceLocation.fromNamespaceAndPath(
-                        IronsMagicCircleMod.MODID,
-                        "textures/magic_circle/" + key + "/layer_" + (i + 1) + ".png"
-                );
+    public static ResourceLocation getLayerTexture(ResourceLocation schoolId, SchoolType schoolType, int layerIndex) {
+        String custom = MagicCircleClientConfig.getCustomLayerTexture(layerIndex);
+        if (custom != null && !custom.trim().isEmpty()) {
+            String resolved = custom.replace("{school}", schoolId.getPath());
+            ResourceLocation loc = CustomTextureManager.resolveCustomTexture(resolved);
+            if (loc != null) {
+                return loc;
             }
-            return layers;
-        });
+        }
+        return SchoolVisualHelper.getSchoolVisual(schoolId, schoolType).layers[Mth.clamp(layerIndex, 0, MAX_LAYERS - 1)];
     }
 
-    private record CastingState(String spellId, String schoolName, int layerCount) {
+    public static ResourceLocation getLayerTexture(String school, int layerIndex) {
+        ResourceLocation id = ResourceLocation.fromNamespaceAndPath("irons_spellbooks", school);
+        return getLayerTexture(id, SchoolRegistry.getSchool(id), layerIndex);
+    }
+
+    public static ResourceLocation getDefaultSchoolLayerTexture(String school, int layerIndex) {
+        ResourceLocation id = ResourceLocation.fromNamespaceAndPath("irons_spellbooks", school);
+        return SchoolVisualHelper.getSchoolVisual(id, SchoolRegistry.getSchool(id)).layers[Mth.clamp(layerIndex, 0, MAX_LAYERS - 1)];
+    }
+
+    private record CastingState(String spellId, ResourceLocation schoolId, SchoolType schoolType, int layerCount) {
     }
 
     /**
@@ -579,21 +637,27 @@ public class MagicCircleRenderHandler {
      */
     private static class MagicCircleSession {
         final String spellId;
-        String schoolName;
+        ResourceLocation schoolId;
+        SchoolType schoolType;
         int layerCount;
         final float castStartTime;
         float lastActiveTime;
         float castEndTime;
         boolean isCurrentlyCasting;
 
-        MagicCircleSession(String spellId, String schoolName, int layerCount, float castStartTime) {
+        MagicCircleSession(String spellId, ResourceLocation schoolId, SchoolType schoolType, int layerCount, float castStartTime) {
             this.spellId = spellId;
-            this.schoolName = schoolName;
+            this.schoolId = schoolId;
+            this.schoolType = schoolType;
             this.layerCount = layerCount;
             this.castStartTime = castStartTime;
             this.lastActiveTime = castStartTime;
             this.castEndTime = castStartTime;
             this.isCurrentlyCasting = true;
+        }
+
+        public String getSchoolName() {
+            return schoolId != null ? schoolId.getPath() : DEFAULT_SCHOOL;
         }
     }
 
@@ -682,7 +746,9 @@ public class MagicCircleRenderHandler {
         float yaw = player.getViewYRot(partialTick);
         float pitch = player.getViewXRot(partialTick);
 
-        ResourceLocation[] schoolLayers = getSchoolLayerTextures(session.schoolName);
+        ResourceLocation schoolId = session.schoolId;
+        SchoolType schoolType = session.schoolType;
+        SchoolVisualHelper.SchoolVisual visual = SchoolVisualHelper.getSchoolVisual(schoolId, schoolType);
 
         // 3. Render ALL layers simultaneously - NO STAGGER ("ไม่ต้องเรียงลำดับการแสดงผล")
         for (int i = 0; i < session.layerCount; i++) {
@@ -692,8 +758,9 @@ public class MagicCircleRenderHandler {
                 continue;
             }
 
-            ResourceLocation layerTexture = schoolLayers[i];
-            float layerRadius = baseRadius * LAYER_SCALE_FACTORS[i];
+            ResourceLocation layerTexture = getLayerTexture(schoolId, schoolType, i);
+            float configuredLayerScale = MagicCircleClientConfig.getLayerScale(i);
+            float layerRadius = baseRadius * configuredLayerScale;
 
             // Tiny depth offset to avoid Z-fighting
             float convergedDepthOffset = (i - (session.layerCount - 1) * 0.5f) * 0.004f * playerScale;
@@ -704,7 +771,8 @@ public class MagicCircleRenderHandler {
             // High speed spinning rotation
             float rotationAngleDeg = 0.0f;
             if (baseRotationSpeed > 0.0f) {
-                rotationAngleDeg = (age * baseRotationSpeed * LAYER_ROTATION_MULTIPLIERS[i] * 1.5f) % 360.0f;
+                float configuredLayerSpeed = MagicCircleClientConfig.getLayerSpeed(i);
+                rotationAngleDeg = (age * baseRotationSpeed * configuredLayerSpeed * 1.5f) % 360.0f;
             }
 
             poseStack.pushPose();
@@ -719,15 +787,18 @@ public class MagicCircleRenderHandler {
 
             // PASS 1: Base Translucent Emissive Pass
             VertexConsumer baseConsumer = bufferSource.getBuffer(RenderType.entityTranslucentEmissive(layerTexture));
-            drawDoubleSidedQuad(baseConsumer, poseMatrix, layerRadius, 255, 255, 255, baseAlpha);
+            drawDoubleSidedQuad(baseConsumer, poseMatrix, layerRadius, visual.red, visual.green, visual.blue, baseAlpha);
 
             // PASS 2: Shader HDR Additive Bloom Pass
             if (enableBloomGlow) {
                 float effectiveGlow = glowIntensity * 1.25f * fadeFactor;
-                int glowChannel = Mth.clamp((int) (255.0f * Mth.clamp(effectiveGlow, 0.0f, 1.0f)), 0, 255);
-                if (glowChannel > 2) {
+                int glowAlpha = Mth.clamp((int) (255.0f * Mth.clamp(effectiveGlow, 0.0f, 1.0f)), 0, 255);
+                if (glowAlpha > 2) {
+                    int glowR = Mth.clamp((int) (visual.red * effectiveGlow), 0, 255);
+                    int glowG = Mth.clamp((int) (visual.green * effectiveGlow), 0, 255);
+                    int glowB = Mth.clamp((int) (visual.blue * effectiveGlow), 0, 255);
                     VertexConsumer glowConsumer = bufferSource.getBuffer(RenderHelper.CustomerRenderType.magicNoCull(layerTexture));
-                    drawDoubleSidedQuad(glowConsumer, poseMatrix, layerRadius, glowChannel, glowChannel, glowChannel, glowChannel);
+                    drawDoubleSidedQuad(glowConsumer, poseMatrix, layerRadius, glowR, glowG, glowB, glowAlpha);
                 }
             }
 
@@ -741,18 +812,28 @@ public class MagicCircleRenderHandler {
     public static class GunCircleSession {
         public final UUID playerId;
         public final String spellId;
-        public final String schoolName;
+        public final ResourceLocation schoolId;
+        public final SchoolType schoolType;
         public final int layerCount;
         public final float shootTime;
         public final float extraForwardOffset;
 
-        public GunCircleSession(UUID playerId, String spellId, String schoolName, int layerCount, float shootTime, float extraForwardOffset) {
+        public GunCircleSession(UUID playerId, String spellId, ResourceLocation schoolId, SchoolType schoolType, int layerCount, float shootTime, float extraForwardOffset) {
             this.playerId = playerId;
             this.spellId = spellId;
-            this.schoolName = schoolName;
+            this.schoolId = schoolId;
+            this.schoolType = schoolType;
             this.layerCount = layerCount;
             this.shootTime = shootTime;
             this.extraForwardOffset = extraForwardOffset;
+        }
+
+        public GunCircleSession(UUID playerId, String spellId, String schoolName, int layerCount, float shootTime, float extraForwardOffset) {
+            this(playerId, spellId, ResourceLocation.fromNamespaceAndPath("irons_spellbooks", schoolName), SchoolRegistry.getSchool(ResourceLocation.fromNamespaceAndPath("irons_spellbooks", schoolName)), layerCount, shootTime, extraForwardOffset);
+        }
+
+        public String getSchoolName() {
+            return schoolId != null ? schoolId.getPath() : DEFAULT_SCHOOL;
         }
     }
 }

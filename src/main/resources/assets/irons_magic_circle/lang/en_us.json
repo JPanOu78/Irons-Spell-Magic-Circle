@@ -1,4 +1,6 @@
 {
+  "key.categories.irons_magic_circle": "Iron's Spell Magic Circle",
+  "key.irons_magic_circle.open_config": "Open Magic Circle Configuration",
   "irons_magic_circle.configuration.enableMagicCircles": "Enable Magic Circles",
   "irons_magic_circle.configuration.circleScale": "Magic Circle Scale",
   "irons_magic_circle.configuration.rotationSpeed": "Magic Circle Rotation Speed",

@@ -123,14 +123,10 @@ public class GunMagicCircleCompat implements IGunCompatBridge {
     }
 
     private static void triggerForPlayer(Player player, AbstractSpell spell, int spellLevel, float extraForwardOffset) {
-        String schoolName = "evocation";
         SchoolType schoolType = spell.getSchoolType();
-        if (schoolType != null && schoolType.getId() != null) {
-            String path = schoolType.getId().getPath();
-            if (MagicCircleRenderHandler.isSupportedSchool(path)) {
-                schoolName = path;
-            }
-        }
+        net.minecraft.resources.ResourceLocation schoolId = (schoolType != null && schoolType.getId() != null)
+                ? schoolType.getId()
+                : io.redspace.ironsspellbooks.api.registry.SchoolRegistry.EVOCATION_RESOURCE;
 
         SpellRarity rarity = spell.getRarity(spellLevel);
         int rarityIndex = (rarity != null) ? rarity.getValue() : 0;
@@ -139,7 +135,8 @@ public class GunMagicCircleCompat implements IGunCompatBridge {
         MagicCircleRenderHandler.triggerGunMagicCircle(
                 player.getUUID(),
                 spell.getSpellId(),
-                schoolName,
+                schoolId,
+                schoolType,
                 layerCount,
                 extraForwardOffset
         );

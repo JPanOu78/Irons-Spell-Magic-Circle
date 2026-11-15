@@ -21,6 +21,10 @@ public class IronsMagicCircleMod {
 
     public IronsMagicCircleMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(ModConfig.Type.CLIENT, MagicCircleClientConfig.SPEC);
+        modContainer.registerExtensionPoint(
+                net.neoforged.neoforge.client.gui.IConfigScreenFactory.class,
+                (container, parentScreen) -> new com.ironsmagiccircle.client.gui.MagicCircleConfigScreen(parentScreen)
+        );
         modEventBus.addListener(this::onClientSetup);
         LOGGER.info("Iron's Spell Magic Circle (Client-Only) initialized.");
     }
